@@ -1,0 +1,14 @@
+# Ignore all files and directories in the project root
+/*
+
+# Except the core essential files and directories
+!/.gitignore
+!/index.html
+!/relic_effects_data.js
+!/bg.jpg
+
+# Kept directories for images/icons
+!/weapon_icons/
+!/weapon_type_icons/
+!/class_icons/
+!/status_icons/
