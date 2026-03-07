@@ -1662,6 +1662,108 @@ function applyRelicEffects(stats) {
   return s;
 }
 
+// === RELIC DAMAGE MULTIPLIERS ===
+// Parse percentage multipliers from relic descriptions and apply them.
+// Returns { phys, mag, fire, thun, holy, total } — each is a multiplier (1.0 = no change).
+// weaponIdx: index into W[], used to check weapon-type-specific relics.
+function getRelicDamageMultipliers(weaponIdx) {
+  const mults = { phys: 1, mag: 1, fire: 1, thun: 1, holy: 1, total: 1 };
+  if (!selectedRelicEffects.length) return mults;
+
+  // Build weapon type name for matching (e.g. "Bow", "Katana", "Dagger")
+  const weaponTypeName = weaponIdx !== null ? (WEP_TYPES[W[weaponIdx][WI.WT]]?.name || '') : '';
+
+  for (const eff of selectedRelicEffects) {
+    // Skip relics that have attr (stat bonuses) — those are handled by applyRelicEffects
+    // Skip starting armament relics — those are handled by applyStartingArmMods
+    if (eff.attr) continue;
+    if (eff.roll === 'st-arma') continue;
+
+    const name = (eff.name || '').toLowerCase();
+    const desc = (eff.desc || '').toLowerCase();
+
+    // Extract percentage from desc: look for patterns like "by 10.5%", "by +9%", "damage by 6%"
+    const pctMatch = desc.match(/(?:by\s*\+?)(\d+(?:\.\d+)?)%/);
+    if (!pctMatch) continue;
+    const pct = parseFloat(pctMatch[1]);
+    if (!pct || pct <= 0) continue;
+    const mult = 1 + pct / 100;
+
+    // --- Element-specific multipliers ---
+    if (desc.includes('physical damage') || desc.includes('physical attack')) {
+      mults.phys *= mult;
+      continue;
+    }
+    if (desc.includes('magic damage') || (desc.includes('magic') && desc.includes('attack'))) {
+      // Check for "magic, fire, lightning, and holy" (affinity relic)
+      if (desc.includes('magic, fire, lightning, and holy') || desc.includes('magic/fire/lightning/holy')) {
+        mults.mag *= mult; mults.fire *= mult; mults.thun *= mult; mults.holy *= mult;
+        continue;
+      }
+      mults.mag *= mult;
+      continue;
+    }
+    if (desc.includes('fire damage') || (desc.includes('fire') && desc.includes('attack'))) {
+      mults.fire *= mult;
+      continue;
+    }
+    if (desc.includes('lightning damage') || (desc.includes('lightning') && desc.includes('attack'))) {
+      mults.thun *= mult;
+      continue;
+    }
+    if (desc.includes('holy damage') || (desc.includes('holy') && desc.includes('attack'))) {
+      mults.holy *= mult;
+      continue;
+    }
+
+    // --- Weapon-type-specific multipliers (e.g. "Improved Bow Attack Power") ---
+    // Match relic name pattern: "Improved {Type} Attack Power"
+    const typeMatch = name.match(/improved\s+(.+?)\s+attack\s+power/);
+    if (typeMatch && weaponTypeName) {
+      const relicType = typeMatch[1].trim();
+      // Match against weapon type name (case-insensitive)
+      if (weaponTypeName.toLowerCase() === relicType) {
+        mults.total *= mult;
+        continue;
+      }
+      // Also match "Light Bow" → relics may say "bow" but weapon type = "Bow"
+      // If no match, this relic doesn't apply to the current weapon, skip it
+      continue;
+    }
+
+    // --- Generic "all damage" / "damage by X%" multipliers ---
+    if (desc.includes('all damage') || desc.includes('increases damage')) {
+      mults.total *= mult;
+      continue;
+    }
+
+    // --- Arrow/bolt damage (ranged weapon relics) ---
+    if (desc.includes('arrow') && desc.includes('bolt')) {
+      // "Improved Ranged Weapon Attacks" — applies to bows/crossbows
+      const rangedTypes = new Set([51, 53, 55, 56]); // Bow, Greatbow, Crossbow, Ballista
+      if (weaponIdx !== null && rangedTypes.has(W[weaponIdx][WI.WT])) {
+        mults.total *= mult;
+      }
+      continue;
+    }
+  }
+  return mults;
+}
+
+// Apply relic damage multipliers to an AR result object in-place.
+// Modifies ar.phys, ar.mag, ar.fire, ar.thun, ar.holy, ar.total.
+function applyRelicMultsToAR(ar, mults) {
+  if (mults.phys !== 1) ar.phys = Math.floor(ar.phys * mults.phys);
+  if (mults.mag !== 1)  ar.mag  = Math.floor(ar.mag  * mults.mag);
+  if (mults.fire !== 1) ar.fire = Math.floor(ar.fire * mults.fire);
+  if (mults.thun !== 1) ar.thun = Math.floor(ar.thun * mults.thun);
+  if (mults.holy !== 1) ar.holy = Math.floor(ar.holy * mults.holy);
+  // Recompute total from elements
+  ar.total = ar.phys + ar.mag + ar.fire + ar.thun + ar.holy;
+  // Then apply any generic total multiplier
+  if (mults.total !== 1) ar.total = Math.floor(ar.total * mults.total);
+}
+
 // === CALC CORRECT GRAPH (from Nightreign CalcCorrectGraph.csv) ===
 // Row 0 (Default): Breakpoints [0, 24, 49, 74, 99] ? Growth [0, 96, 168, 216, 240]
 // Rows 1-15 (Linear): [0, 99] ? [0, 300]
@@ -2705,6 +2807,8 @@ function renderWeaponInfo2() {
     if (twoHanding && !NO_TH_TYPES.has(w2[WI.WT])) {
       ar2.total = Math.floor(ar2.total * getTHMult(w2, selWeapon2));
     }
+    const relicMults2 = getRelicDamageMultipliers(selWeapon2);
+    applyRelicMultsToAR(ar2, relicMults2);
     
     // Show AR comparison delta for weapon 2 vs weapon 1
     if (compareMode && selWeapon !== null) {
@@ -2713,6 +2817,8 @@ function renderWeaponInfo2() {
       if (twoHanding && !NO_TH_TYPES.has(w1[WI.WT])) {
         cmpAr1.total = Math.floor(cmpAr1.total * getTHMult(w1, selWeapon));
       }
+      const cmpMults1 = getRelicDamageMultipliers(selWeapon);
+      applyRelicMultsToAR(cmpAr1, cmpMults1);
       const arDiff2 = ar2.total - cmpAr1.total;
       if (arDiff2 === 0) {
         document.getElementById('arTotal2').innerHTML = ar2.total + ' <span style="font-size:0.65em;color:var(--text2)">(--)</span>';
@@ -3148,6 +3254,8 @@ function renderRelicList() {
   if (q) {
     items = items.filter(e => e.name.toLowerCase().includes(q) || e.desc.toLowerCase().includes(q));
   }
+  // Sort alphabetically by name
+  items = items.slice().sort((a, b) => a.name.localeCompare(b.name));
   const selectedIds = new Set(selectedRelicEffects.map(e => e.id));
   listEl.innerHTML = items.map(e => {
     const sel = selectedIds.has(e.id);
@@ -3270,6 +3378,10 @@ function updateAll() {
     ar.total = Math.floor(ar.total * getTHMult(weapon, selWeapon));
   }
 
+  // Apply relic damage multipliers (percentage-based attack-up relics)
+  const relicMults = getRelicDamageMultipliers(selWeapon);
+  applyRelicMultsToAR(ar, relicMults);
+
   graphSection.classList.add('show');
   document.getElementById('graphNoCharMsg').classList.remove('show');
 
@@ -3301,6 +3413,8 @@ function updateAll() {
     if (twoHanding && !NO_TH_TYPES.has(w2[WI.WT])) {
       cmpAr2.total = Math.floor(cmpAr2.total * getTHMult(w2, selWeapon2));
     }
+    const cmpMults2 = getRelicDamageMultipliers(selWeapon2);
+    applyRelicMultsToAR(cmpAr2, cmpMults2);
     const arDiff = ar.total - cmpAr2.total;
     if (arDiff === 0) {
       document.getElementById('arTotal').innerHTML = ar.total + ' <span style="font-size:0.65em;color:var(--text2)">(--)</span>';
@@ -3577,6 +3691,9 @@ function renderGraph() {
         baseData[idx][l] = { ...ar };
         ar.total = Math.floor(ar.total * thMult);
       }
+      // Apply relic damage multipliers
+      const graphRelicMults = getRelicDamageMultipliers(t.wIdx);
+      applyRelicMultsToAR(ar, graphRelicMults);
       allData[idx][l] = ar;
       const val = gKey === 'total' ? ar.total : ar[gKey];
       if (val > maxAR) maxAR = val;
@@ -4382,6 +4499,10 @@ function sbUpdateAR() {
   if (canTH) {
     ar.total = Math.floor(ar.total * getTHMult(w, sbWeapon));
   }
+
+  // Apply relic damage multipliers (percentage-based attack-up relics)
+  const sbRelicMults = getRelicDamageMultipliers(sbWeapon);
+  applyRelicMultsToAR(ar, sbRelicMults);
 
   const finalAr = ar;
   const total = finalAr.total;
